@@ -1,0 +1,221 @@
+openapi: 3.1.0
+info:
+  title: Gilpick MVP API
+  version: 0.1.0
+  description: Seoul-only trip planning API. Team approval is required before implementation.
+servers:
+  - url: https://api.example.com/v1
+security:
+  - bearerAuth: []
+paths:
+  /auth/exchange:
+    post:
+      security: []
+      summary: Exchange a Kakao or Google provider token for Gilpick tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthExchangeRequest'
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/refresh:
+    post:
+      security: []
+      summary: Rotate a refresh token
+      responses:
+        '200':
+          description: Refreshed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /places:
+    get:
+      summary: Search Kakao places restricted to Seoul
+      parameters:
+        - { name: region, in: query, required: true, schema: { type: string, const: 서울 } }
+        - { name: keyword, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 100 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200':
+          description: Search results; items may be empty
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, hasNext]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Place' } }
+                  hasNext: { type: boolean }
+        '502': { $ref: '#/components/responses/ProviderFailure' }
+  /trips:
+    get:
+      summary: List authenticated user's trips
+      responses:
+        '200':
+          description: Trip summaries
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Trip' } }
+    post:
+      summary: Create a trip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties: { title: { type: string, minLength: 1, maxLength: 100 } }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+  /trips/{tripId}:
+    get:
+      summary: Get a trip with days and ordered visits
+      parameters: [ { $ref: '#/components/parameters/TripId' } ]
+      responses:
+        '200':
+          description: Trip
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      summary: Replace mutable trip schedule using optimistic version
+      parameters: [ { $ref: '#/components/parameters/TripId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TripUpdate' }
+      responses:
+        '200':
+          description: Updated canonical trip
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '409':
+          description: Version conflict with latest canonical trip
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Trip' }
+        '422': { $ref: '#/components/responses/ValidationFailure' }
+    delete:
+      summary: Delete an owned trip
+      parameters: [ { $ref: '#/components/parameters/TripId' } ]
+      responses:
+        '204': { description: Deleted }
+  /trips/{tripId}/days/{date}/route:
+    get:
+      summary: Get ordered route for one date and transport mode
+      parameters:
+        - { $ref: '#/components/parameters/TripId' }
+        - { name: date, in: path, required: true, schema: { type: string, format: date } }
+        - { name: mode, in: query, required: true, schema: { type: string, enum: [WALK, DRIVE, TRANSIT] } }
+      responses:
+        '200':
+          description: Route, marker-only, or empty state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutePlan' }
+        '502': { $ref: '#/components/responses/ProviderFailure' }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    TripId: { name: tripId, in: path, required: true, schema: { type: string, format: uuid } }
+  responses:
+    Unauthorized: { description: Invalid or expired authentication }
+    NotFound: { description: Resource absent or not owned by user }
+    ProviderFailure: { description: Place or route provider unavailable/quota exceeded }
+    ValidationFailure: { description: Duplicate date/place, over 10 visits, non-Seoul place, or invalid order }
+  schemas:
+    AuthExchangeRequest:
+      type: object
+      required: [provider, idToken]
+      properties:
+        provider: { type: string, enum: [KAKAO, GOOGLE] }
+        idToken: { type: string, minLength: 1 }
+    AuthTokens:
+      type: object
+      required: [accessToken, refreshToken, expiresInSeconds]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresInSeconds: { type: integer, minimum: 1 }
+    Place:
+      type: object
+      required: [providerPlaceId, name, latitude, longitude]
+      properties:
+        providerPlaceId: { type: string }
+        name: { type: string }
+        address: { type: [string, 'null'] }
+        category: { type: [string, 'null'] }
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+    Visit:
+      type: object
+      required: [place, position]
+      properties:
+        place: { $ref: '#/components/schemas/Place' }
+        position: { type: integer, minimum: 1, maximum: 10 }
+    TripDay:
+      type: object
+      required: [date, visits]
+      properties:
+        date: { type: string, format: date }
+        visits: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/Visit' } }
+    Trip:
+      type: object
+      required: [id, title, version, days, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        version: { type: integer, minimum: 1 }
+        days: { type: array, items: { $ref: '#/components/schemas/TripDay' } }
+        updatedAt: { type: string, format: date-time }
+    TripUpdate:
+      type: object
+      required: [title, expectedVersion, days]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100 }
+        expectedVersion: { type: integer, minimum: 1 }
+        days: { type: array, items: { $ref: '#/components/schemas/TripDay' } }
+    RoutePlan:
+      type: object
+      required: [state, mode, stops, segments, generatedAt]
+      properties:
+        state: { type: string, enum: [EMPTY, MARKER_ONLY, READY] }
+        mode: { type: string, enum: [WALK, DRIVE, TRANSIT] }
+        stops: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/Visit' } }
+        segments:
+          type: array
+          maxItems: 9
+          items:
+            type: object
+            required: [fromPosition, toPosition, geometry]
+            properties:
+              fromPosition: { type: integer }
+              toPosition: { type: integer }
+              geometry:
+                type: array
+                items:
+                  type: object
+                  required: [latitude, longitude]
+                  properties:
+                    latitude: { type: number }
+                    longitude: { type: number }
+              durationSeconds: { type: [integer, 'null'] }
+              distanceMeters: { type: [integer, 'null'] }
+        generatedAt: { type: string, format: date-time }

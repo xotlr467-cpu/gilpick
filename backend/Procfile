@@ -1,0 +1,2 @@
+release: java -Dspring.main.web-application-type=none -jar build/libs/gilpick-backend.jar
+web: java -Dserver.port=$PORT -jar build/libs/gilpick-backend.jar
